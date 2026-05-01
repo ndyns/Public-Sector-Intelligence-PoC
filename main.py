@@ -11,22 +11,20 @@ from openai import OpenAI
 
 URL = "https://www.city.saitama.lg.jp/003/001/011/index.html"
 OUTPUT_FILE = "saitama_childcare_services_with_ai.json"
-
+os.environ["OPENAI_API_KEY"] = "sk-****"
 
 def clean_text(text: str) -> str:
-    """Remove excessive whitespace and normalize line breaks."""
     text = re.sub(r"\s+", "\n", text)
     text = re.sub(r"\n{2,}", "\n", text)
     return text.strip()
 
 
 def fetch_page(url: str) -> str:
-    """Fetch a web page and extract plain text."""
-    response = requests.get(url, timeout=20)
-    response.raise_for_status()
-    response.encoding = response.apparent_encoding
+    res = requests.get(url, timeout=20)
+    res.raise_for_status()
+    res.encoding = res.apparent_encoding
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(res.text, "html.parser")
 
     for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
         tag.decompose()
@@ -36,7 +34,6 @@ def fetch_page(url: str) -> str:
 
 
 def extract_policy_section(text: str) -> str:
-    """Extract the childcare support section from the page text."""
     start_keyword = "子育てに関する援助"
 
     if start_keyword in text:
@@ -46,7 +43,6 @@ def extract_policy_section(text: str) -> str:
 
 
 def split_services(text: str) -> list[dict]:
-    """Split page text into service-level records."""
     lines = [line.strip() for line in text.split("\n") if line.strip()]
 
     services = []
@@ -61,12 +57,10 @@ def split_services(text: str) -> list[dict]:
 
         if is_title:
             if current_title:
-                services.append(
-                    {
-                        "title": current_title,
-                        "description": " ".join(current_desc),
-                    }
-                )
+                services.append({
+                    "title": current_title,
+                    "description": " ".join(current_desc)
+                })
                 current_desc = []
 
             current_title = line
@@ -75,64 +69,55 @@ def split_services(text: str) -> list[dict]:
                 current_desc.append(line)
 
     if current_title:
-        services.append(
-            {
-                "title": current_title,
-                "description": " ".join(current_desc),
-            }
-        )
+        services.append({
+            "title": current_title,
+            "description": " ".join(current_desc)
+        })
 
     return services
 
 
 def is_valid_service(service: dict) -> bool:
-    """Filter out obvious noise records."""
-    description = service.get("description", "")
+    desc = service.get("description", "")
 
-    if len(description) < 30:
+    if len(desc) < 30:
         return False
 
     noise_words = ["フッター", "分類", "サイトマップ", "Copyright"]
-    if any(word in description for word in noise_words):
+    if any(word in desc for word in noise_words):
         return False
 
     return True
 
 
 def add_metadata(services: list[dict]) -> list[dict]:
-    """Add metadata to each service record."""
     records = []
 
     for i, service in enumerate(services, start=1):
-        records.append(
-            {
-                "id": f"saitama_childcare_{i:03d}",
-                "municipality": "さいたま市",
-                "domain": "子育て",
-                "source_url": URL,
-                "fetched_at": datetime.now().isoformat(timespec="seconds"),
-                "title": service["title"],
-                "description": service["description"],
-                "ai_analysis": None,
-            }
-        )
+        record = {
+            "id": f"saitama_childcare_{i:03d}",
+            "municipality": "さいたま市",
+            "domain": "子育て",
+            "source_url": URL,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "title": service["title"],
+            "description": service["description"],
+            "ai_analysis": None
+        }
+        records.append(record)
 
     return records
 
 
 def extract_json(content: str) -> dict:
-    """Parse JSON from model output."""
     try:
         return json.loads(content)
     except json.JSONDecodeError:
-        json_match = re.search(r"\{.*\}", content, re.DOTALL)
-        if not json_match:
-            raise ValueError("No JSON object found in AI response.")
-        return json.loads(json_match.group())
+        json_str = re.search(r"\{.*\}", content, re.DOTALL).group()
+        return json.loads(json_str)
 
 
 def analyze_service(client: OpenAI, service: dict) -> dict:
-    """Analyze one childcare support service with OpenAI API."""
     prompt = f"""
 あなたは公共領域の事業開発担当者です。
 以下の子育て支援制度の説明文を読み、営業・戦略判断に使える情報へ変換してください。
@@ -172,44 +157,47 @@ def analyze_service(client: OpenAI, service: dict) -> dict:
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0,
+        temperature=0
     )
 
     content = response.choices[0].message.content
     return extract_json(content)
 
 
-def main() -> None:
-    print("Fetching page...")
+def main():
+    print("ページ取得中...")
     cleaned_text = fetch_page(URL)
 
-    print("Extracting policy section...")
+    print("本文抽出中...")
     policy_text = extract_policy_section(cleaned_text)
 
-    print("Splitting into service records...")
+    print("制度単位に分割中...")
     services = split_services(policy_text)
-    services = [service for service in services if is_valid_service(service)]
+    services = [s for s in services if is_valid_service(s)]
 
-    print(f"Extracted records: {len(services)}")
+    print(f"抽出件数: {len(services)}")
+
     records = add_metadata(services)
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("OPENAI_API_KEY is not set.")
+        raise ValueError("OPENAI_API_KEY が設定されていません。")
 
     client = OpenAI(api_key=api_key)
 
-    print("Running AI analysis...")
+    print("AI分析中...")
     for record in records:
-        print(f"Analyzing: {record['id']} {record['title']}")
+        print(f"分析中: {record['id']} {record['title']}")
         record["ai_analysis"] = analyze_service(client, record)
         time.sleep(1)
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as file:
-        json.dump(records, file, ensure_ascii=False, indent=2)
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
 
-    print(f"Done: saved to {OUTPUT_FILE}")
+    print(f"完了: {OUTPUT_FILE} に保存しました。")
 
 
 if __name__ == "__main__":
     main()
+
+
